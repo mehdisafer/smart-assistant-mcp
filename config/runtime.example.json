@@ -1,0 +1,124 @@
+{
+  "schema_version": 1,
+  "version": "0.1.0",
+  "stage": "LOCAL",
+  "root": ".",
+  "host": "127.0.0.1",
+  "port": 8765,
+  "public_exposure": false,
+  "projects": {
+    "workspace": "workspace"
+  },
+  "wiki": {
+    "root": "docs",
+    "manifest": "docs/wiki_manifest.json"
+  },
+  "governor": {
+    "reserve_gib": 2,
+    "recovery_seconds": 30,
+    "max_sample_age_seconds": 5,
+    "max_leases": 16,
+    "max_heavy_leases": 1,
+    "disk_min_gib": 5,
+    "sample_seconds": 1,
+    "l0_max_gib": 0.03,
+    "l1_max_gib": 0.12,
+    "l0_min_free_gib": 0.35,
+    "l1_min_free_gib": 0.75,
+    "emergency_commit_stop_pct": 99
+  },
+  "broker": {
+    "enabled": true,
+    "queue_limit": 32,
+    "memory_gib": 0.5,
+    "max_active": 2,
+    "max_timeout_seconds": 3600,
+    "max_output_bytes": 33554432
+  },
+  "backends": {
+    "serena": {
+      "enabled": false,
+      "command": "",
+      "args": [],
+      "env": {},
+      "memory_gib": 1.0,
+      "allowed_tools": [
+        "search_for_pattern",
+        "get_symbols_overview",
+        "find_symbol",
+        "find_referencing_symbols",
+        "find_implementations",
+        "find_declaration",
+        "get_diagnostics_for_file",
+        "get_current_config",
+        "initial_instructions"
+      ],
+      "startup_timeout_seconds": 90,
+      "call_timeout_seconds": 90
+    },
+    "codegraph": {
+      "enabled": false,
+      "command": "",
+      "args": [],
+      "env": {},
+      "memory_gib": 1.0,
+      "allowed_tools": ["codegraph_explore"],
+      "startup_timeout_seconds": 30,
+      "call_timeout_seconds": 60
+    },
+    "agent_memory": {
+      "enabled": false,
+      "command": "",
+      "args": [],
+      "env": {},
+      "memory_gib": 0.5,
+      "allowed_tools": [
+        "memory_recall",
+        "memory_sessions",
+        "memory_smart_search",
+        "memory_audit"
+      ],
+      "startup_timeout_seconds": 70,
+      "call_timeout_seconds": 45
+    },
+    "desktop": {
+      "enabled": false,
+      "command": "",
+      "args": [],
+      "env": {},
+      "memory_gib": 1.0,
+      "allowed_tools": [
+        "read_file",
+        "read_multiple_files",
+        "write_file",
+        "edit_block",
+        "create_directory",
+        "list_directory",
+        "move_file",
+        "get_file_info",
+        "write_pdf"
+      ],
+      "startup_timeout_seconds": 60,
+      "call_timeout_seconds": 45
+    }
+  },
+  "principals": {
+    "local-operator": {
+      "projects": ["workspace"]
+    }
+  },
+  "allow_mutations": true,
+  "state_dir": "data/state",
+  "mutation_projects": ["workspace"],
+  "max_hot_backends": 3,
+  "compatibility_state_dir": "data/desktop-compat",
+  "process_admin_enabled": false,
+  "daemon_manager": {
+    "max_active": 1,
+    "memory_gib": 0.25
+  },
+  "managed_daemons": {},
+  "managed_windows_services": {},
+  "protected_windows_services": [],
+  "immutable_subpaths": {}
+}

@@ -1,0 +1,19 @@
+{
+  "identities": [
+    {
+      "owner": "local-operator",
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "scopes": [
+        "mcp:use",
+        "context:read",
+        "maintenance:run",
+        "workspace:read",
+        "workspace:write",
+        "process:read",
+        "process:execute"
+      ],
+      "expires_at": 0,
+      "revoked": false
+    }
+  ]
+}

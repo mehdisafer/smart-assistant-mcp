@@ -1,0 +1,28 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "smart-assistant-mcp"
+version = "0.1.0"
+description = "Resource-governed MCP runtime for local developer workstations"
+readme = "README.md"
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "mcp>=2,<3",
+  "psutil>=7,<8",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=9.0.3,<10"]
+
+[project.scripts]
+smart-assistant-mcp = "smart_assistant_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/smart_assistant_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
