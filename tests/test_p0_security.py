@@ -287,3 +287,34 @@ def test_desktop_tool_catalog_excludes_writes_when_disabled(desktop, tmp_path):
     visible_writable = asyncio.run(writable.tools("p", "owner"))["tools"]
     assert [tool["name"] for tool in visible_readonly] == ["read_file"]
     assert {tool["name"] for tool in visible_writable} == {"read_file", "create_directory"}
+
+
+def test_native_direct_read_revalidates_opened_file(stack, tmp_path, monkeypatch):
+    import smart_assistant_mcp.filesystem as module
+
+    root, policy, _, _ = stack
+    target = root / "normal.txt"
+    target.write_text("original", encoding="utf-8")
+    alternate = tmp_path / "other.txt"
+    alternate.write_text("alternate", encoding="utf-8")
+    reader = FileSystem(policy, tmp_path / "state")
+    assert reader.read("p", "normal.txt")["content"] == "original"
+    saved = module.os.open
+
+    def redirected(path, flags, *args, **kwargs):
+        if Path(path) == target:
+            return saved(alternate, flags, *args, **kwargs)
+        return saved(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(module.os, "open", redirected)
+    with pytest.raises(RuntimeFault) as err:
+        reader.read("p", "normal.txt")
+    assert err.value.code == "PATH_CHANGED"
+
+
+def test_direct_read_blocks_protected_name(stack, tmp_path):
+    root, policy, _, _ = stack
+    (root / ".env").write_text("fixture", encoding="utf-8")
+    reader = FileSystem(policy, tmp_path / "state")
+    with pytest.raises(RuntimeFault):
+        reader.read("p", ".env")
