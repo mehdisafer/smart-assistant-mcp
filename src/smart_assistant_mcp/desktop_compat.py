@@ -36,8 +36,9 @@ PATH_KEYS={'read_file':['path'],'get_file_info':['path'],'list_directory':['path
  'write_file':['path'],'edit_block':['file_path'],'create_directory':['path'],
  'move_file':['source','destination'],'write_pdf':['path']}
 class DesktopCompatibility:
-    def __init__(self,policy,filesystem,manager,state_dir):
+    def __init__(self,policy,filesystem,manager,state_dir,allow_mutations=False):
         self.policy,self.filesystem,self.manager=policy,filesystem,manager
+        self.allow_mutations=bool(allow_mutations)
         spec=getattr(manager,'specs',{}).get('desktop',{}) if isinstance(getattr(manager,'specs',{}),dict) else {}
         call_timeout=float(spec.get('call_timeout_seconds',45))
         queue_timeout=float(spec.get('queue_timeout_seconds',max(2.0,min(15.0,call_timeout*.25))))
@@ -71,7 +72,7 @@ class DesktopCompatibility:
         async with self.manager.use('desktop',project,partition=owner) as actor:
             result=[]
             for name,t in actor.catalog.items():
-                if name not in TOOLS:continue
+                if name not in TOOLS or (name in WRITE_TOOLS and not self.allow_mutations):continue
                 item=t.model_dump(mode='json',by_alias=True); schema=copy.deepcopy(item['inputSchema'])
                 props=schema.setdefault('properties',{})
                 if name in WRITE_TOOLS:
@@ -93,6 +94,8 @@ class DesktopCompatibility:
             return {'tools':result,'engine':'desktop-commander-oss@0.2.51','remote_service_dependency':False,'terminal':'Use native execution_* tools for durable jobs.'}
     def normalize(self,name,args,project):
         if name not in TOOLS:raise RuntimeFault('TOOL_DENIED','Compatibility tool is not qualified.')
+        if name in WRITE_TOOLS and not self.allow_mutations:
+            raise RuntimeFault('MUTATIONS_DISABLED','Operator disabled mutation tools globally.')
         args=copy.deepcopy(args)
         key=args.pop('_request_key',None); expected=args.pop('_expected_sha256',None)
         if args.get('isUrl'):raise RuntimeFault('URL_NOT_QUALIFIED','URL fetching is outside this local-file adapter.')
@@ -111,6 +114,8 @@ class DesktopCompatibility:
             raise RuntimeFault('REQUEST_KEY_REQUIRED','A stable _request_key is required for mutations.')
         if name in {'write_file','edit_block','move_file','write_pdf'} and (not isinstance(expected,str) or (expected!='CREATE' and not re.fullmatch(r'(?:DIR-)?[a-f0-9]{64}',expected))):
             raise RuntimeFault('VERSION_REQUIRED','Supply _expected_sha256 from get_file_info.')
+        if name=='move_file':
+            self.policy.require_movable_tree(paths[0])
         if name=='move_file' and expected=='CREATE':
             raise RuntimeFault('VERSION_REQUIRED','move_file requires the source version token from get_file_info.')
         if name=='list_directory':args['depth']=min(max(int(args.get('depth',2)),1),4)
@@ -179,6 +184,9 @@ class DesktopCompatibility:
                             raw=await asyncio.to_thread(paths[0].read_bytes)
                             backup=self.root/'file-backups'/(hashlib.sha256(str(paths[0]).casefold().encode()).hexdigest()+'-'+actual)
                             await asyncio.to_thread(atomic_bytes,backup,raw)
+                    if name=='move_file':
+                        # Re-evaluate descendants under cooperative writer locks.
+                        self.policy.require_movable_tree(paths[0])
                     if name=='move_file' and paths[1].exists():
                         raise RuntimeFault('DESTINATION_EXISTS','No overwrite is performed by move_file.')
                     if name=='write_pdf':

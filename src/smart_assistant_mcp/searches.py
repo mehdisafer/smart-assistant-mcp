@@ -4,6 +4,7 @@ import fnmatch
 import json
 import os
 import re
+import stat
 import threading
 import time
 import uuid
@@ -122,23 +123,50 @@ class SearchManager:
             thread.start()
             return self.public(meta)
 
-    def _iter_files(self, target: Path, include_hidden: bool):
+    def _iter_files(self, project: str, target: Path, include_hidden: bool):
+        """Yield only regular files admitted by the policy used for direct reads."""
+        root = self.policy.roots[project]
+
+        def checked(path: Path, directory: bool):
+            try:
+                relative = path.relative_to(root).as_posix()
+                # pathlib represents the project root as '.', which the path
+                # policy correctly rejects as a user-supplied component.
+                if relative == '.':
+                    relative = ''
+                admitted = self.policy.resolve(project, relative, True)
+                info = admitted.lstat()
+                if (stat.S_ISLNK(info.st_mode) or
+                        getattr(info, 'st_file_attributes', 0) & 0x400):
+                    return None
+                expected = stat.S_ISDIR if directory else stat.S_ISREG
+                return admitted if expected(info.st_mode) else None
+            except (OSError, ValueError, RuntimeFault):
+                return None
+
         if target.is_file():
-            yield target
+            admitted = checked(target, False)
+            if admitted is not None:
+                yield admitted
             return
-        skipped = {".venv", "node_modules", "__pycache__", ".pytest_cache"}
+
+        skipped = {'.venv', 'node_modules', '__pycache__', '.pytest_cache'}
         for base, dirs, files in os.walk(target, followlinks=False):
+            if checked(Path(base), True) is None:
+                dirs[:] = []
+                continue
             dirs[:] = sorted(
                 d for d in dirs
-                if d.casefold() not in DENIED_PARTS
-                and (include_hidden or not d.startswith("."))
+                if (include_hidden or not d.startswith('.'))
                 and d not in skipped
-                and not (Path(base) / d).is_symlink()
+                and checked(Path(base) / d, True) is not None
             )
             for name in sorted(files):
-                if not include_hidden and name.startswith("."):
+                if not include_hidden and name.startswith('.'):
                     continue
-                yield Path(base) / name
+                admitted = checked(Path(base) / name, False)
+                if admitted is not None:
+                    yield admitted
 
     def _run(self, session_id: str, target: Path, meta: dict,
              stop: threading.Event, lease_key: str):
@@ -169,7 +197,7 @@ class SearchManager:
             meta["status"] = "RUNNING"; meta["started_at"] = utc_now()
             self._write_meta(session_id, meta)
             with results_path.open("a", encoding="utf-8", buffering=1) as out:
-                for path in self._iter_files(target, meta["include_hidden"]):
+                for path in self._iter_files(meta["project"], target, meta["include_hidden"]):
                     if stop.is_set():
                         meta["status"] = "STOPPED"; break
                     if time.monotonic() - started >= meta["timeout_seconds"]:
@@ -189,15 +217,16 @@ class SearchManager:
                             meta["result_count"] += 1
                     else:
                         try:
-                            size = path.stat().st_size
-                            if size > 4 * 1024 * 1024:
+                            # Iterator path checks are not authorization to open later.
+                            with self.policy.open_project_file(meta["project"], relative) as stream:
+                                raw = stream.read(4 * 1024 * 1024 + 1)
+                            if len(raw) > 4 * 1024 * 1024:
                                 continue
-                            raw = path.read_bytes()
                             meta["bytes_read"] += len(raw); meta["files_examined"] += 1
                             if b"\x00" in raw:
                                 continue
                             lines = raw.decode("utf-8-sig", errors="replace").splitlines()
-                        except OSError:
+                        except (OSError, RuntimeFault):
                             continue
                         for index, line in enumerate(lines):
                             if matched(line):
