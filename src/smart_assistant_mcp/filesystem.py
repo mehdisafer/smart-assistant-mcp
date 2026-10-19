@@ -249,8 +249,12 @@ class FileSystem:
     def read(self, project, relative, offset=0, length=200):
         if not 0 <= offset <= 1_000_000 or not 1 <= length <= 1000:
             raise RuntimeFault('INVALID_RANGE', 'Line offset or length is out of range.')
-        path = self.policy.resolve(project, relative, True)
-        raw = self._load(path)
+        with self.policy.open_project_file(project, relative) as opened:
+            raw = opened.read(self.max_file_bytes + 1)
+        if len(raw) > self.max_file_bytes:
+            raise RuntimeFault('FILE_TOO_LARGE', 'Use a bounded streaming job for this file.')
+        if b'\x00' in raw:
+            raise RuntimeFault('BINARY_FILE', 'This tool accepts text; use a dedicated binary-format adapter.')
         lines = raw.decode('utf-8-sig', errors='replace').splitlines()
         text = '\n'.join(lines[offset:offset + length])
         return {'project': project, 'path': relative, 'sha256': hashlib.sha256(raw).hexdigest(),
