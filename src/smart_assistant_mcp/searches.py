@@ -130,6 +130,10 @@ class SearchManager:
         def checked(path: Path, directory: bool):
             try:
                 relative = path.relative_to(root).as_posix()
+                # pathlib represents the project root as '.', which the path
+                # policy correctly rejects as a user-supplied component.
+                if relative == '.':
+                    relative = ''
                 admitted = self.policy.resolve(project, relative, True)
                 info = admitted.lstat()
                 if (stat.S_ISLNK(info.st_mode) or
