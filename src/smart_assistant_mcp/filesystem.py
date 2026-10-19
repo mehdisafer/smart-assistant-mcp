@@ -4,6 +4,7 @@ import hashlib
 import os
 import stat
 import time
+from contextlib import contextmanager
 from pathlib import Path
 
 from .common import RuntimeFault, atomic_bytes
@@ -15,6 +16,7 @@ class PathPolicy:
     """Application path policy, NOT a sandbox for arbitrary shell commands."""
     def __init__(self, roots: dict[str, str | Path], immutable_subpaths: dict[str, list[str]] | None=None):
         self.roots = {name: Path(value).resolve() for name, value in roots.items()}
+        self.protected_stores = set()
         self.immutable_subpaths = {}
         for project, values in (immutable_subpaths or {}).items():
             if project not in self.roots:
@@ -70,6 +72,99 @@ class PathPolicy:
                     'This registered subpath is read-only by policy; use the governed promotion/packaging workflow.')
         return resolved
 
+
+    def protected_roots(self) -> set[Path]:
+        """Protected descendants are not movable via their writable ancestors."""
+        return {
+            *self.protected_stores,
+            *(self.roots[project].joinpath(*prefix).resolve()
+              for project, prefixes in self.immutable_subpaths.items()
+              for prefix in prefixes),
+        }
+
+    def require_movable_tree(self, path: Path, *, limit: int = 4096) -> None:
+        """Reject a directory move containing protected paths, names or reparse points."""
+        if not path.is_dir():
+            return
+        if any(protected.is_relative_to(path) for protected in self.protected_roots()):
+            raise RuntimeFault('IMMUTABLE_PATH', 'Move would relocate protected application data.')
+        pending, examined = [path], 0
+        while pending:
+            directory = pending.pop()
+            info = directory.lstat()
+            if stat.S_ISLNK(info.st_mode) or getattr(info, 'st_file_attributes', 0) & 0x400:
+                raise RuntimeFault('REPARSE_POINT', 'A movable tree cannot contain reparse points.')
+            with os.scandir(directory) as entries:
+                for entry in entries:
+                    examined += 1
+                    if examined > limit:
+                        raise RuntimeFault('PROTECTED_TREE_SCAN_BOUND',
+                                           'Protected descendant inventory exceeds its limit.')
+                    name = entry.name.casefold()
+                    if name in DENIED_PARTS or name.startswith('.env'):
+                        raise RuntimeFault('PROTECTED_MUTATION_PATH',
+                                           'Move would relocate protected file names.')
+                    details = entry.stat(follow_symlinks=False)
+                    if (stat.S_ISLNK(details.st_mode) or
+                            getattr(details, 'st_file_attributes', 0) & 0x400):
+                        raise RuntimeFault('REPARSE_POINT', 'Move would relocate a reparse point.')
+                    if stat.S_ISDIR(details.st_mode):
+                        pending.append(Path(entry.path))
+
+    @contextmanager
+    def open_project_file(self, project: str, relative: str):
+        """Validate the *opened handle* before a search reads any bytes.
+
+        Path-only prechecks can race against an external filesystem writer.
+        This does not isolate arbitrary executables launched by the MCP.
+        """
+        path = self.resolve(project, relative, True)
+        flags = os.O_RDONLY | getattr(os, 'O_BINARY', 0) | getattr(os, 'O_NOFOLLOW', 0)
+        fd = os.open(path, flags)
+        try:
+            opened = os.fstat(fd)
+            if (not stat.S_ISREG(opened.st_mode) or
+                    getattr(opened, 'st_file_attributes', 0) & 0x400):
+                raise RuntimeFault('NOT_REGULAR_FILE', 'Only regular non-reparse files are readable.')
+            current = self.resolve(project, relative, True)
+            actual = current.lstat()
+            if (current != path or (opened.st_dev, opened.st_ino) !=
+                    (actual.st_dev, actual.st_ino)):
+                raise RuntimeFault('PATH_CHANGED', 'File identity changed during admission.')
+            if os.name == 'nt':
+                # Handle identity defeats a swapped ancestor junction between check and open.
+                import ctypes
+                import msvcrt
+                from ctypes import wintypes
+                api = ctypes.WinDLL('kernel32', use_last_error=True)
+                get_name = api.GetFinalPathNameByHandleW
+                get_name.argtypes = [wintypes.HANDLE, wintypes.LPWSTR,
+                                    wintypes.DWORD, wintypes.DWORD]
+                get_name.restype = wintypes.DWORD
+                handle = msvcrt.get_osfhandle(fd)
+                size = get_name(handle, None, 0, 0)
+                if not size or size > 32767:
+                    raise RuntimeFault('HANDLE_PATH_UNVERIFIED', 'Cannot verify opened file location.')
+                buffer = ctypes.create_unicode_buffer(size + 1)
+                count = get_name(handle, buffer, len(buffer), 0)
+                if not count or count >= len(buffer):
+                    raise RuntimeFault('HANDLE_PATH_UNVERIFIED', 'Cannot verify opened file location.')
+                native = buffer.value
+                marker = chr(92) * 2 + '?' + chr(92)
+                if native.startswith(marker + 'UNC' + chr(92)):
+                    absolute = chr(92) * 2 + native[len(marker) + 4:]
+                elif native.startswith(marker):
+                    absolute = native[len(marker):]
+                else:
+                    raise RuntimeFault('HANDLE_PATH_UNVERIFIED', 'Unknown opened path format.')
+                if Path(absolute) != path:
+                    raise RuntimeFault('PATH_CHANGED', 'Opened file escaped or moved from expected path.')
+            with os.fdopen(fd, 'rb') as stream:
+                fd = None
+                yield stream
+        finally:
+            if fd is not None:
+                os.close(fd)
 
 class FileLock:
     """Cross-process writer lock.
@@ -138,6 +233,7 @@ class FileLock:
 class FileSystem:
     def __init__(self, policy: PathPolicy, state_dir: Path, max_file_bytes=2*1024*1024):
         self.policy, self.state_dir, self.max_file_bytes = policy, state_dir, max_file_bytes
+        self.policy.protected_stores.add(Path(state_dir).resolve())
 
     def _load(self, path):
         if not path.is_file():
