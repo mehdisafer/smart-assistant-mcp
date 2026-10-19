@@ -202,3 +202,88 @@ def test_move_rejects_immutable_even_before_creation(desktop):
     with pytest.raises(RuntimeFault) as exc:
         policy.require_movable_tree(root / "parent")
     assert exc.value.code == "IMMUTABLE_PATH"
+
+
+def test_open_handle_cannot_be_redirected_to_different_inode(stack, tmp_path, monkeypatch):
+    """Simulate an adversarial replacement between path admission and OS open."""
+    from smart_assistant_mcp import filesystem as fs_module
+
+    root, policy, _, _ = stack
+    allowed = root / "allowed.txt"
+    allowed.write_text("public", encoding="utf-8")
+    outside = tmp_path / "outside.txt"
+    outside.write_text("do not read", encoding="utf-8")
+    original_open = fs_module.os.open
+
+    def redirect(path, flags, *args, **kwargs):
+        if Path(path) == allowed:
+            return original_open(outside, flags, *args, **kwargs)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr(fs_module.os, "open", redirect)
+    with pytest.raises(RuntimeFault) as exc:
+        with policy.open_project_file("p", "allowed.txt"):
+            pytest.fail("An unverified OS handle reached the caller")
+    assert exc.value.code == "PATH_CHANGED"
+
+
+def test_move_rejects_unregistered_symlink_descendant(desktop, tmp_path):
+    root, policy, _, _ = desktop
+    source = root / "movable"
+    source.mkdir()
+    external = tmp_path / "outside"
+    external.mkdir()
+    try:
+        (source / "untrusted").symlink_to(external, target_is_directory=True)
+    except (OSError, NotImplementedError) as exc:
+        pytest.skip(f"Directory symlink unavailable: {exc}")
+    with pytest.raises(RuntimeFault) as raised:
+        policy.require_movable_tree(source)
+    assert raised.value.code == "REPARSE_POINT"
+
+
+def test_move_tree_scan_limit_is_fail_closed(desktop):
+    root, policy, _, _ = desktop
+    source = root / "movable"
+    source.mkdir()
+    for index in range(3):
+        (source / f"file-{index}.txt").write_text("safe", encoding="utf-8")
+    with pytest.raises(RuntimeFault) as raised:
+        policy.require_movable_tree(source, limit=2)
+    assert raised.value.code == "PROTECTED_TREE_SCAN_BOUND"
+
+
+def test_desktop_tool_catalog_excludes_writes_when_disabled(desktop, tmp_path):
+    import asyncio
+    from contextlib import asynccontextmanager
+
+    root, policy, files, _ = desktop
+
+    class FakeTool:
+        def __init__(self, name):
+            self.name = name
+
+        def model_dump(self, mode="json", by_alias=True):
+            return {"name": self.name, "inputSchema": {
+                "type": "object", "properties": {"path": {"type": "string"}},
+                "required": ["path"]}}
+
+    class FakeManager:
+        specs = {"desktop": {"call_timeout_seconds": 5}}
+
+        @asynccontextmanager
+        async def use(self, backend, project, partition=None):
+            assert backend == "desktop" and project == "p"
+            yield SimpleNamespace(catalog={
+                "read_file": FakeTool("read_file"),
+                "create_directory": FakeTool("create_directory")})
+
+    manager = FakeManager()
+    readonly = DesktopCompatibility(policy, files, manager,
+                                    tmp_path / "read_only_adapter", allow_mutations=False)
+    writable = DesktopCompatibility(policy, files, manager,
+                                    tmp_path / "writable_adapter", allow_mutations=True)
+    visible_readonly = asyncio.run(readonly.tools("p", "owner"))["tools"]
+    visible_writable = asyncio.run(writable.tools("p", "owner"))["tools"]
+    assert [tool["name"] for tool in visible_readonly] == ["read_file"]
+    assert {tool["name"] for tool in visible_writable} == {"read_file", "create_directory"}
