@@ -54,7 +54,7 @@ def build(config: dict):
     processes=ProcessManager()
     broker=Broker(store,governor,policy,root/'data'/'executions-v2',config.get('broker'))
     backends=BackendManager(config.get('backends',{}),policy,governor,max_hot=int(config.get('max_hot_backends',3)))
-    desktop=DesktopCompatibility(policy,filesystem,backends,config['compatibility_state_dir']) if config.get('backends',{}).get('desktop',{}).get('enabled',False) else None
+    desktop=DesktopCompatibility(policy,filesystem,backends,config['compatibility_state_dir'],allow_mutations=bool(config.get('allow_mutations',False))) if config.get('backends',{}).get('desktop',{}).get('enabled',False) else None
     identities=IdentityRegistry(root/'config'/'identities.json')
     truth=CapabilityTruth(backends,policy,config.get('capability_ttl_seconds',120))
     metrics=OperationMetrics()
@@ -355,6 +355,8 @@ def build(config: dict):
         if backend=='desktop':
             if desktop is None: raise ToolError('BACKEND_DISABLED: Desktop compatibility not enabled.')
             writes=tool in COMPAT_WRITES
+            if writes and not config.get('allow_mutations',False):
+                raise ToolError('MUTATIONS_DISABLED: operator disabled mutations globally.')
             require('workspace:write' if writes else 'workspace:read',project)
             if writes: require_mutation_project(project)
             try:

@@ -136,6 +136,16 @@ The default configuration binds only to `127.0.0.1`, exposes only the local `wor
 
 ## Security posture
 
+The Desktop Commander compatibility layer has an explicit `allow_mutations` gate.
+When the value is absent or `false`, Desktop write, edit, move, directory-creation,
+and PDF-write compatibility tools are not exposed or admitted. To enable them on an
+authorized developer workstation, set `"allow_mutations": true` **and** configure
+`mutation_projects`, identity scopes, project roots, and the existing version/idempotency
+requirements. The provided local example explicitly enables workspace mutations;
+it does not grant unscoped writes or change permissions of the installed private
+Smart Assistant runtime. This public export is not the source-of-truth release of
+that private deployment.
+
 The public configuration is intentionally conservative:
 
 - loopback-only server;
