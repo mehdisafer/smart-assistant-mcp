@@ -41,6 +41,8 @@ Every operation is admitted into a resource lane. Interactive low-cost work rema
 
 Accepted commands are persisted before execution. Jobs survive HTTP disconnects and use idempotency keys to prevent duplicate mutation on retry. Output is journaled to disk and read with byte cursors.
 
+Input idempotency keys identify durable admissions within an owned execution. Retrying an accepted input returns its receipt even after the execution terminates; it does not enqueue the input again. A new input still requires a running execution and queue capacity. Acceptance means an at-most-once delivery attempt, not proof that the child consumed the input.
+
 ### Context backends
 
 Serena, CodeGraph and Agent Memory are treated as independent MCP processes with explicit tool allowlists, bounded queues and a warm-pool lifecycle.

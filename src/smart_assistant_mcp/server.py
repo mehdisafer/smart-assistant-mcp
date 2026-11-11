@@ -330,7 +330,10 @@ def build(config: dict):
 
     @mutation_tool()
     def execution_input(execution_id: str,text: str,request_key: str) -> dict:
-        """Send terminal input, including required newlines, using an idempotency key."""
+        """Admit terminal input with an idempotency key; a retry replays the admission even after termination.
+
+        Include required newlines. Acceptance is an at-most-once delivery attempt, not proof the child consumed input.
+        """
         owner=require('process:execute')
         return store.input(execution_id,owner,text,request_key)
 
