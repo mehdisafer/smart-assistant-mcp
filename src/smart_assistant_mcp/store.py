@@ -153,16 +153,21 @@ class StateStore:
             raise RuntimeFault('INPUT_TOO_LARGE', 'Input exceeds 64 KiB.')
         with self.connection(True) as con:
             row = con.execute('SELECT * FROM jobs WHERE id=? AND owner=?', (job_id, owner)).fetchone()
-            if not row or row['state'] != 'RUNNING':
+            if not row:
                 raise RuntimeFault('NOT_RUNNING', 'Input requires a running execution.')
             existing = con.execute('SELECT text FROM inputs WHERE job_id=? AND request_key=?',
                                    (job_id, request_key)).fetchone()
             if existing and existing['text'] != text:
                 raise RuntimeFault('IDEMPOTENCY_CONFLICT', 'Input key already used with different text.')
-            if not existing and con.execute('SELECT count(*) FROM inputs WHERE job_id=? AND delivered=0', (job_id,)).fetchone()[0] >= 16:
-                raise RuntimeFault('INPUT_QUEUE_FULL', 'Input queue is full.', True)
-            con.execute('INSERT OR IGNORE INTO inputs(job_id,request_key,text) VALUES(?,?,?)',
-                        (job_id, request_key, text))
+            # A retry replays its durable admission even if the runner has since
+            # finished. Only a new input requires a running execution and space.
+            if not existing:
+                if row['state'] != 'RUNNING':
+                    raise RuntimeFault('NOT_RUNNING', 'Input requires a running execution.')
+                if con.execute('SELECT count(*) FROM inputs WHERE job_id=? AND delivered=0', (job_id,)).fetchone()[0] >= 16:
+                    raise RuntimeFault('INPUT_QUEUE_FULL', 'Input queue is full.', True)
+                con.execute('INSERT INTO inputs(job_id,request_key,text) VALUES(?,?,?)',
+                            (job_id, request_key, text))
         return {'accepted': True, 'delivery_guarantee': 'at-most-once attempt; inspect output after a runner crash'}
 
     def claim_inputs(self, job_id):
